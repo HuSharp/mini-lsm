@@ -1,7 +1,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use anyhow::Result;
+use anyhow::{bail, Ok, Result};
 
 use crate::{
     iterators::{merge_iterator::MergeIterator, StorageIterator},
@@ -17,7 +17,16 @@ pub struct LsmIterator {
 
 impl LsmIterator {
     pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        Ok(Self { inner: iter })
+        let mut iter = Self { inner: iter };
+        iter.move_to_non_delete()?;
+        Ok(iter)
+    }
+
+    fn move_to_non_delete(&mut self) -> Result<()> {
+        while self.is_valid() && self.value().is_empty() {
+            self.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -25,19 +34,22 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.inner.is_valid()
     }
 
     fn key(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.key().raw_ref()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.inner.next()?;
+        // move to the next non-delete entry
+        self.move_to_non_delete()?;
+        Ok(())
     }
 }
 
@@ -46,11 +58,15 @@ impl StorageIterator for LsmIterator {
 /// `is_valid` should return false, and `next` should always return an error.
 pub struct FusedIterator<I: StorageIterator> {
     iter: I,
+    has_error: bool,
 }
 
 impl<I: StorageIterator> FusedIterator<I> {
     pub fn new(iter: I) -> Self {
-        Self { iter }
+        Self {
+            iter,
+            has_error: false,
+        }
     }
 }
 
@@ -58,18 +74,25 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
     type KeyType<'a> = I::KeyType<'a> where Self: 'a;
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        !self.has_error && self.iter.is_valid()
     }
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        self.iter.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.iter.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if self.has_error {
+            bail!("Iterator has already returned an error")
+        }
+        if let Some(err) = self.iter.next().err() {
+            self.has_error = true;
+            return Err(err);
+        }
+        Ok(())
     }
 }

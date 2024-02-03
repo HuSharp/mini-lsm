@@ -2,6 +2,7 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::cmp::{self};
+use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 
 use anyhow::Result;
@@ -42,12 +43,21 @@ impl<I: StorageIterator> Ord for HeapWrapper<I> {
 /// iterators, perfer the one with smaller index.
 pub struct MergeIterator<I: StorageIterator> {
     iters: BinaryHeap<HeapWrapper<I>>,
-    current: HeapWrapper<I>,
+    current: Option<HeapWrapper<I>>,
 }
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let mut iters = iters
+            .into_iter()
+            .enumerate()
+            .filter(|(_, iter)| iter.is_valid())
+            .map(|(i, iter)| HeapWrapper(i, iter))
+            .collect::<BinaryHeap<_>>();
+        Self {
+            current: iters.pop(),
+            iters,
+        }
     }
 }
 
@@ -57,18 +67,57 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        // check if current iterator is valid including when current iterator is None
+        self.current
+            .as_ref()
+            .map(|x| x.1.is_valid())
+            .unwrap_or(false)
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let current = self.current.as_mut().unwrap();
+        // merge same key
+        while let Some(mut inner_iter) = self.iters.peek_mut() {
+            if current.1.key() == inner_iter.1.key() {
+                // check next error
+                if let Err(e) = inner_iter.1.next() {
+                    PeekMut::pop(inner_iter);
+                    return Err(e);
+                }
+
+                // need to remove the iterator if it is invalid
+                if !inner_iter.1.is_valid() {
+                    PeekMut::pop(inner_iter);
+                }
+            } else {
+                break;
+            }
+        }
+
+        current.1.next()?;
+        // if current iterator is invalid, replace with next iterator
+        if !current.1.is_valid() {
+            if let Some(next_iter) = self.iters.pop() {
+                *current = next_iter;
+            }
+            return Ok(());
+        }
+
+        if let Some(mut inner_iter) = self.iters.peek_mut() {
+            // TODO: check value is reverse because heap is max heap
+            if *current < *inner_iter {
+                std::mem::swap(&mut *current, &mut *inner_iter);
+            }
+        }
+
+        Ok(())
     }
 }

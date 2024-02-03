@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
+use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 
@@ -99,8 +100,17 @@ impl MemTable {
     }
 
     /// Get an iterator over a range of keys.
-    pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
-        unimplemented!()
+    pub fn scan(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> MemTableIterator {
+        let map = self.map.clone();
+        let mut iter = MemTableIteratorBuilder {
+            map,
+            iter_builder: |map| map.range((map_bound(lower), map_bound(upper))),
+            item: (Bytes::new(), Bytes::new()),
+        }
+        .build();
+        let next = iter.with_iter_mut(|iter| MemTableIterator::entry_to_item(iter.next()));
+        iter.with_item_mut(|item| *item = next);
+        iter
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
@@ -142,22 +152,34 @@ pub struct MemTableIterator {
     item: (Bytes, Bytes),
 }
 
+impl MemTableIterator {
+    // This function is used to convert a `SkipMap` entry to a key-value pair.
+    fn entry_to_item(entry: Option<Entry<'_, Bytes, Bytes>>) -> (Bytes, Bytes) {
+        entry
+            .map(|x| (x.key().clone(), x.value().clone()))
+            .unwrap_or_else(|| (Bytes::new(), Bytes::new()))
+    }
+}
+
 impl StorageIterator for MemTableIterator {
     type KeyType<'a> = KeySlice<'a>;
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        &self.borrow_item().1
     }
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        KeySlice::from_slice(&self.borrow_item().0)
     }
 
+    // is_valid returns if the iterator has reached the end or errored.
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        !self.borrow_item().0.is_empty()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let next = self.with_iter_mut(|iter| MemTableIterator::entry_to_item(iter.next()));
+        self.with_item_mut(|item| *item = next);
+        Ok(())
     }
 }
