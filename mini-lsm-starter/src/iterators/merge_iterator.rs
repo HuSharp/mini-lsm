@@ -80,6 +80,9 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     }
 
     fn next(&mut self) -> Result<()> {
+        if self.current.is_none() {
+            return Ok(());
+        }
         let current = self.current.as_mut().unwrap();
         // merge same key
         while let Some(mut inner_iter) = self.iters.peek_mut() {
