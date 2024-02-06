@@ -107,6 +107,7 @@ impl BlockIterator {
         entry.advance(value_len);
         // set index
         self.idx = idx;
+        // idx will be 0 if the iterator is invalid
     }
 
     /// Seek to the first key that >= `key`.
