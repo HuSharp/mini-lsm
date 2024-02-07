@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use anyhow::{Ok, Result};
 
 use super::StorageIterator;
@@ -19,11 +16,21 @@ impl<
     > TwoMergeIterator<A, B>
 {
     pub fn create(a: A, b: B) -> Result<Self> {
-        Ok(Self {
-            choose_a: Self::choose_a(&a, &b),
+        let mut iter = Self {
+            choose_a: false,
             a,
             b,
-        })
+        };
+        iter.skip_b()?;
+        iter.choose_a = Self::choose_a(&iter.a, &iter.b);
+        Ok(iter)
+    }
+
+    fn skip_b(&mut self) -> Result<()> {
+        if self.a.is_valid() && self.b.is_valid() && self.b.key() == self.a.key() {
+            self.b.next()?;
+        }
+        Ok(())
     }
 
     fn choose_a(a: &A, b: &B) -> bool {
@@ -33,7 +40,7 @@ impl<
         if !b.is_valid() {
             return true;
         }
-        a.key() <= b.key()
+        a.key() < b.key()
     }
 }
 
@@ -61,26 +68,32 @@ impl<
     }
 
     fn is_valid(&self) -> bool {
-        self.a.is_valid() || self.b.is_valid()
+        if !self.a.is_valid() && !self.b.is_valid() {
+            false
+        } else if self.choose_a {
+            self.a.is_valid()
+        } else {
+            self.b.is_valid()
+        }
     }
 
     fn next(&mut self) -> Result<()> {
-        println!("next");
-        // skip same key for the next
+        // skip same key for b
         if self.choose_a {
-            if self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key() {
-                self.b.next()?;
-            }
             self.a.next()?;
         } else {
-            if self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key() {
-                self.a.next()?;
-            }
             self.b.next()?;
         }
 
+        if self.a.is_valid() && self.b.is_valid() && self.a.key() == self.b.key() {
+            self.b.next()?;
+        }
         self.choose_a = Self::choose_a(&self.a, &self.b);
 
         Ok(())
+    }
+
+    fn num_active_iterators(&self) -> usize {
+        self.a.num_active_iterators() + self.b.num_active_iterators()
     }
 }
