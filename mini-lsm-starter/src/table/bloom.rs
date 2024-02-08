@@ -3,7 +3,8 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 
-/// Implements a bloom filter
+/// Bloom implements bloom filter functionalities over
+/// a bit-slice of data.
 pub struct Bloom {
     /// data of filter in bits
     pub(crate) filter: Bytes,
@@ -62,10 +63,10 @@ impl Bloom {
     }
 
     /// Get bloom filter bits per key from entries count and FPR
-    pub fn bloom_bits_per_key(entries: usize, false_positive_rate: f64) -> usize {
+    pub fn bloom_bits_per_key(hashs_count: usize, false_positive_rate: f64) -> usize {
         let size =
-            -1.0 * (entries as f64) * false_positive_rate.ln() / std::f64::consts::LN_2.powi(2);
-        let locs = (size / (entries as f64)).ceil();
+            -1.0 * (hashs_count as f64) * false_positive_rate.ln() / std::f64::consts::LN_2.powi(2);
+        let locs = (std::f64::consts::LN_2 * size / (hashs_count as f64)).ceil();
         locs as usize
     }
 
@@ -79,7 +80,17 @@ impl Bloom {
         let mut filter = BytesMut::with_capacity(nbytes);
         filter.resize(nbytes, 0);
 
-        // TODO: build the bloom filter
+        keys.iter().for_each(|h| {
+            /* h is the key hash */
+            let mut h = *h;
+            let delta = (h >> 17) | (h << 15);
+            for j in 0..k {
+                let bitpos = delta as usize % nbits;
+                filter.set_bit(bitpos, true);
+                // we can add delta to uniformly distribute the bits
+                h = h.wrapping_add(delta);
+            }
+        });
 
         Self {
             filter: filter.freeze(),
@@ -88,7 +99,7 @@ impl Bloom {
     }
 
     /// Check if a bloom filter may contain some data
-    pub fn may_contain(&self, h: u32) -> bool {
+    pub fn may_contain(&self, mut h: u32) -> bool {
         if self.k > 30 {
             // potential new encoding for short bloom filters
             true
@@ -96,9 +107,45 @@ impl Bloom {
             let nbits = self.filter.bit_len();
             let delta = (h >> 17) | (h << 15);
 
-            // TODO: probe the bloom filter
+            for j in 0..self.k {
+                let bitpos = delta as usize % nbits;
+                if !self.filter.get_bit(bitpos) {
+                    return false;
+                }
+                // we can add delta to uniformly distribute the bits
+                h = h.wrapping_add(delta);
+            }
 
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_small_bloom_filter() {
+        let hash: Vec<u32> = vec![b"hello".to_vec(), b"world".to_vec()]
+            .into_iter()
+            .map(|x| farmhash::fingerprint32(&x))
+            .collect();
+        let bloom = Bloom::build_from_key_hashes(&hash, 10);
+
+        let check_hash: Vec<u32> = vec![
+            b"hello".to_vec(),
+            b"world".to_vec(),
+            b"x".to_vec(),
+            b"fool".to_vec(),
+        ]
+        .into_iter()
+        .map(|x| farmhash::fingerprint32(&x))
+        .collect();
+
+        assert!(bloom.may_contain(check_hash[0]));
+        assert!(bloom.may_contain(check_hash[1]));
+        assert!(!bloom.may_contain(check_hash[2]));
+        assert!(!bloom.may_contain(check_hash[3]));
     }
 }

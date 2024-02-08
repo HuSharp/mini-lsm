@@ -388,12 +388,24 @@ impl LsmStorageInner {
         let mut table_iters = Vec::with_capacity(snapshot.l0_sstables.len());
         for sst_id in snapshot.l0_sstables.iter() {
             let sst = snapshot.sstables.get(sst_id).unwrap();
+            // check if the key is within the SST's key range
             if key_within(key, sst.first_key().raw_ref(), sst.last_key().raw_ref()) {
-                let iter = SsTableIterator::create_and_seek_to_key(
-                    sst.clone(),
-                    KeySlice::from_slice(key),
-                )?;
-                table_iters.push(Box::new(iter));
+                // bloom filter check
+                if let Some(bloom) = &sst.bloom {
+                    if bloom.may_contain(farmhash::fingerprint32(key)) {
+                        let iter = SsTableIterator::create_and_seek_to_key(
+                            sst.clone(),
+                            KeySlice::from_slice(key),
+                        )?;
+                        table_iters.push(Box::new(iter));
+                    }
+                } else {
+                    let iter = SsTableIterator::create_and_seek_to_key(
+                        sst.clone(),
+                        KeySlice::from_slice(key),
+                    )?;
+                    table_iters.push(Box::new(iter));
+                }
             }
         }
 

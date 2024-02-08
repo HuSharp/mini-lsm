@@ -210,7 +210,7 @@ pub fn generate_sst_with_ts(
     builder.build(id, block_cache, path.as_ref()).unwrap()
 }
 
-pub(crate) fn sync(storage: &LsmStorageInner) {
+pub fn sync(storage: &LsmStorageInner) {
     storage
         .force_freeze_memtable(&storage.state_lock.lock())
         .unwrap();

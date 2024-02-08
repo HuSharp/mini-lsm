@@ -1,13 +1,10 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::BufMut;
 
-use super::{BlockMeta, FileObject, SsTable};
+use super::{bloom::Bloom, BlockMeta, FileObject, SsTable};
 use crate::{
     block::BlockBuilder,
     key::{KeySlice, KeyVec},
@@ -22,14 +19,16 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) metas: Vec<BlockMeta>,
     block_size: usize,
+    key_hashes: Vec<u32>,
 }
 
 /*
--------------------------------------------------------------------------------------------
-|         Block Section         |          Meta Section         |          Extra          |
--------------------------------------------------------------------------------------------
-| data block | ... | data block |        vec<metadata>          | meta block offset (u32) |
--------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------
+|         Block Section         |                            Meta Section                           |
+-----------------------------------------------------------------------------------------------------
+| data block | ... | data block | metadata | meta block offset | bloom filter  | bloom filter offset  |
+|                               |  varlen  |         u32       |    varlen    |        u32          |
+-----------------------------------------------------------------------------------------------------
 */
 impl SsTableBuilder {
     /// Create a builder based on target block size.
@@ -41,19 +40,21 @@ impl SsTableBuilder {
             data: Vec::new(),
             metas: Vec::new(),
             block_size,
+            key_hashes: Vec::new(),
         }
     }
 
     /// Adds a key-value pair to SSTable.
     ///
-    /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
-    /// be helpful here)
+    /// we should split a new block when the current block is full.
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
         // if the first time add to this block, set the first key
         if self.first_key.is_empty() {
             self.first_key.set_from_slice(key);
         }
 
+        // add the key hash to the bloom filter
+        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
         // block builder returns false when the block is full.
         if self.block_builder.add(key, value) {
             self.last_key.set_from_slice(key);
@@ -104,6 +105,15 @@ impl SsTableBuilder {
         BlockMeta::encode_block_metas(&self.metas, &mut buf);
         // extra info for the meta block offset
         buf.put_u32(block_meta_offset as u32);
+        // create bloom filter and encode it
+        let bits_per_key = Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01);
+        println!("encode bits per key: {}", bits_per_key);
+        let bloom = Bloom::build_from_key_hashes(&self.key_hashes, bits_per_key);
+        println!("encode bloom size: {}, k={}", bloom.filter.len(), bloom.k);
+        let bloom_offset = buf.len();
+        bloom.encode(&mut buf);
+        buf.put_u32(bloom_offset as u32);
+
         let file = FileObject::create(path.as_ref(), buf)?;
         let sst_table = SsTable {
             id,
@@ -113,7 +123,7 @@ impl SsTableBuilder {
             block_metas: self.metas,
             block_meta_offset,
             block_cache,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         };
         Ok(sst_table)
