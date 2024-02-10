@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     collections::BTreeMap, ops::Bound, os::unix::fs::MetadataExt, path::Path, sync::Arc,
     time::Duration,
