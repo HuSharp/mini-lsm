@@ -289,7 +289,7 @@ fn main() {
                     storage.snapshot = snapshot;
                     storage.remove(&del);
                     println!("--- After Compaction ---");
-                    if dump_real_id {
+                    if !dump_real_id {
                         storage.dump_real_id(true, false);
                     } else {
                         storage.dump_original_id(true, false);

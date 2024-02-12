@@ -107,9 +107,7 @@ impl SsTableBuilder {
         buf.put_u32(block_meta_offset as u32);
         // create bloom filter and encode it
         let bits_per_key = Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01);
-        println!("encode bits per key: {}", bits_per_key);
         let bloom = Bloom::build_from_key_hashes(&self.key_hashes, bits_per_key);
-        println!("encode bloom size: {}, k={}", bloom.filter.len(), bloom.k);
         let bloom_offset = buf.len();
         bloom.encode(&mut buf);
         buf.put_u32(bloom_offset as u32);
