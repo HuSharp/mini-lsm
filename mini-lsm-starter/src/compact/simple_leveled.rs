@@ -121,6 +121,7 @@ impl SimpleLeveledCompactionController {
             assert!(l0_ssts_compacted.is_empty());
             new_snapshot.l0_sstables = new_l0_sstables;
         }
+
         files_to_remove.extend(&new_snapshot.levels[task.lower_level].1);
         new_snapshot.levels[task.lower_level].1 = output.to_vec();
         (new_snapshot, files_to_remove)

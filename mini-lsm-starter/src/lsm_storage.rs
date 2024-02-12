@@ -351,8 +351,14 @@ impl LsmStorageInner {
             let sst_id = snapshot.imm_memtables.pop().unwrap().id();
             println!("flushed {}.sst with size={}", sst_id, new_sst.table_size());
             snapshot.sstables.insert(sst_id, new_sst);
-            // L0 SSTs are sorted by creation time, from latest to earliest.
-            snapshot.l0_sstables.insert(0, sst_id);
+            if self.compaction_controller.flush_to_l0() {
+                // In leveled compaction or no compaction, simply flush to L0
+                // L0 SSTs are sorted by creation time, from latest to earliest.
+                snapshot.l0_sstables.insert(0, sst_id);
+            } else {
+                // In tiered compaction, create a new tier
+                snapshot.levels.insert(0, (sst_id, vec![sst_id]));
+            }
             *guard = Arc::new(snapshot);
         }
 

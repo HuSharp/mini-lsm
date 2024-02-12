@@ -138,7 +138,6 @@ impl LsmStorageInner {
             iter.next()?;
 
             if builder_inner.estimated_size() >= self.options.target_sst_size {
-                println!("compact_generate_sst_from_iter");
                 let sst_id = self.next_sst_id();
                 let builder = builder.take().unwrap();
                 let new_sst = Arc::new(builder.build(
@@ -216,8 +215,10 @@ impl LsmStorageInner {
                             lower_ssts.push(snapshot.sstables.get(id).unwrap().clone());
                         }
                         let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
-                        let iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                        self.compact_generate_sst_from_iter(iter, task.compact_to_bottom_level())
+                        self.compact_generate_sst_from_iter(
+                            TwoMergeIterator::create(upper_iter, lower_iter)?,
+                            task.compact_to_bottom_level(),
+                        )
                     }
                     // because it is L0 compaction, we can not use concat iterator which is for ordered sstables
                     None => {
@@ -235,10 +236,27 @@ impl LsmStorageInner {
                             lower_ssts.push(snapshot.sstables.get(id).unwrap().clone());
                         }
                         let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ssts)?;
-                        let iter = TwoMergeIterator::create(upper_merge_iter, lower_iter)?;
-                        self.compact_generate_sst_from_iter(iter, task.compact_to_bottom_level())
+                        self.compact_generate_sst_from_iter(
+                            TwoMergeIterator::create(upper_merge_iter, lower_iter)?,
+                            task.compact_to_bottom_level(),
+                        )
                     }
                 }
+            }
+            CompactionTask::Tiered(TieredCompactionTask { tiers, .. }) => {
+                let mut iters = Vec::with_capacity(tiers.len());
+                for (_, tier_sst_ids) in tiers {
+                    let mut ssts = Vec::with_capacity(tier_sst_ids.len());
+                    for id in tier_sst_ids.iter() {
+                        ssts.push(snapshot.sstables.get(id).unwrap().clone());
+                    }
+                    let iter = SstConcatIterator::create_and_seek_to_first(ssts)?;
+                    iters.push(Box::new(iter));
+                }
+                self.compact_generate_sst_from_iter(
+                    MergeIterator::create(iters),
+                    task.compact_to_bottom_level(),
+                )
             }
             _ => unimplemented!(),
         }
