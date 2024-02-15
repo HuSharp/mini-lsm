@@ -23,6 +23,7 @@ use crate::iterators::StorageIterator;
 use crate::key::KeySlice;
 use crate::lsm_iterator::FusedIterator;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -332,10 +333,11 @@ impl LsmStorageInner {
             .compaction_controller
             .generate_compaction_task(&snapshot);
         if let Some(task) = task {
+            let state_lock = self.state_lock.lock();
             self.dump_structure();
             println!("running compaction task: {:?}", task);
             let new_ssts = self.compact(&task)?;
-            let output = new_ssts.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
+            let new_ssts_to_add = new_ssts.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
             let mut snapshot = self.state.read().as_ref().clone();
             // insert new SSTs to sstables
             for ssts_to_add in new_ssts {
@@ -344,7 +346,7 @@ impl LsmStorageInner {
             }
             let (mut new_snapshot, files_to_remove) = self
                 .compaction_controller
-                .apply_compaction_result(&snapshot, &task, &output);
+                .apply_compaction_result(&snapshot, &task, &new_ssts_to_add);
             // remove old SSTs from sstables
             let mut ssts_to_remove = Vec::with_capacity(files_to_remove.len());
             for file_to_remove in &files_to_remove {
@@ -357,14 +359,21 @@ impl LsmStorageInner {
             drop(state);
 
             println!(
-                "compaction finished: {} files removed, {} files added, output={:?}",
+                "compaction finished: {} files removed, {} files added, ssts={:?}",
                 ssts_to_remove.len(),
-                output.len(),
-                output
+                new_ssts_to_add.len(),
+                new_ssts_to_add
             );
             for sst in ssts_to_remove.iter() {
                 std::fs::remove_file(self.path_of_sst(sst.sst_id()))?;
             }
+
+            // update manifest
+            self.manifest.as_ref().unwrap().add_record(
+                &state_lock,
+                ManifestRecord::Compaction(task, new_ssts_to_add),
+            )?;
+            self.sync_dir()?;
         }
         Ok(())
     }
