@@ -255,7 +255,7 @@ impl LsmStorageInner {
                 for (_, tier_sst_ids) in tiers {
                     let mut ssts = Vec::with_capacity(tier_sst_ids.len());
                     for id in tier_sst_ids.iter() {
-                        ssts.push(snapshot.sstables.get(id).unwrap().clone());
+                        ssts.push(snapshot.sstables[id].clone());
                     }
                     let iter = SstConcatIterator::create_and_seek_to_first(ssts)?;
                     iters.push(Box::new(iter));

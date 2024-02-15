@@ -1,5 +1,3 @@
-#![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
-
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
@@ -33,7 +31,7 @@ impl Manifest {
                     .create_new(true)
                     .write(true)
                     .open(path)
-                    .context("failed to create manifest")?,
+                    .context("[manifest.create] failed to create manifest")?,
             )),
         })
     }
