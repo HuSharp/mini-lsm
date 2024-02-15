@@ -74,17 +74,17 @@ impl CompactionController {
         &self,
         snapshot: &LsmStorageState,
         task: &CompactionTask,
-        output: &[usize],
+        new_ssts: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
         match (self, task) {
             (CompactionController::Leveled(ctrl), CompactionTask::Leveled(task)) => {
-                ctrl.apply_compaction_result(snapshot, task, output)
+                ctrl.apply_compaction_result(snapshot, task, new_ssts)
             }
             (CompactionController::Simple(ctrl), CompactionTask::Simple(task)) => {
-                ctrl.apply_compaction_result(snapshot, task, output)
+                ctrl.apply_compaction_result(snapshot, task, new_ssts)
             }
             (CompactionController::Tiered(ctrl), CompactionTask::Tiered(task)) => {
-                ctrl.apply_compaction_result(snapshot, task, output)
+                ctrl.apply_compaction_result(snapshot, task, new_ssts)
             }
             _ => unreachable!(),
         }
@@ -201,6 +201,12 @@ impl LsmStorageInner {
                 upper_level_sst_ids,
                 lower_level_sst_ids,
                 ..
+            })
+            | CompactionTask::Leveled(LeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level_sst_ids,
+                ..
             }) => {
                 match upper_level {
                     Some(_) => {
@@ -258,7 +264,6 @@ impl LsmStorageInner {
                     task.compact_to_bottom_level(),
                 )
             }
-            _ => unimplemented!(),
         }
     }
 
