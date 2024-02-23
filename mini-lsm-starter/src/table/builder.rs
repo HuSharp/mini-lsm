@@ -23,12 +23,12 @@ pub struct SsTableBuilder {
 }
 
 /*
------------------------------------------------------------------------------------------------------
-|         Block Section         |                            Meta Section                           |
------------------------------------------------------------------------------------------------------
-| data block | ... | data block | metadata | meta block offset | bloom filter  | bloom filter offset  |
-|                               |  varlen  |         u32       |    varlen    |        u32          |
------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+|                   Block Section                     |                                                Meta Section                                           |
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+| data block | checksum | ... | data block | checksum | no. of block | metadata | checksum | meta block offset | bloom filter  | checksum | bloom filter offset |
+|   varlen   |    u32   |     |   varlen   |    u32   |     u32      |  varlen  |    u32   |        u32        |    varlen    |    u32   |        u32         |
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
 */
 impl SsTableBuilder {
     /// Create a builder based on target block size.
@@ -78,7 +78,12 @@ impl SsTableBuilder {
             first_key: std::mem::take(&mut self.first_key).into_key_bytes(),
             last_key: std::mem::take(&mut self.last_key).into_key_bytes(),
         });
-        self.data.extend_from_slice(&block.build().encode());
+
+        let encode_data = block.build().encode();
+        self.data.extend_from_slice(&encode_data);
+        // add checksum
+        let checksum = crc32fast::hash(&encode_data);
+        self.data.put_u32(checksum);
     }
 
     /// Get the estimated size of the SSTable.

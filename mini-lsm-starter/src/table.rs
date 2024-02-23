@@ -43,6 +43,8 @@ impl BlockMeta {
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_metas(block_meta: &[BlockMeta], buf: &mut Vec<u8>) {
         let original_len = buf.len();
+        let meta_len = block_meta.len();
+        buf.put_u32(block_meta.len() as u32);
         for meta in block_meta {
             buf.put_u32(meta.offset as u32);
             buf.put_u16(meta.first_key.len() as u16);
@@ -50,12 +52,19 @@ impl BlockMeta {
             buf.put_u16(meta.last_key.len() as u16);
             buf.put_slice(meta.last_key.raw_ref());
         }
+        // add checksum
+        let checksum = crc32fast::hash(&buf[original_len + 4..]);
+        buf.put_u32(checksum);
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_metas(mut buf: impl Buf) -> Result<Vec<BlockMeta>> {
+    pub fn decode_block_metas(mut buf: &[u8]) -> Result<Vec<BlockMeta>> {
+        // get meta data len
+        let meta_len = buf.get_u32() as usize;
+        // cal checksum
+        let checksum = crc32fast::hash(&buf[..buf.remaining() - 4]);
         let mut block_meta = vec![];
-        while buf.has_remaining() {
+        for _ in 0..meta_len {
             let offset = buf.get_u32() as usize;
             let first_key_len = buf.get_u16() as usize;
             let first_key = buf.copy_to_bytes(first_key_len);
@@ -66,6 +75,10 @@ impl BlockMeta {
                 first_key: KeyBytes::from_bytes(first_key),
                 last_key: KeyBytes::from_bytes(last_key),
             });
+        }
+        // checksum
+        if checksum != buf.get_u32() {
+            return Err(anyhow::anyhow!("BlockMeta checksum mismatch"));
         }
         Ok(block_meta)
     }
@@ -187,12 +200,21 @@ impl SsTable {
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
         let offset = self.block_metas[block_idx].offset as u64;
-        let next_offset = self
+        let block_end = self
             .block_metas
             .get(block_idx + 1)
             .map_or(self.block_meta_offset, |x| x.offset) as u64;
-        let data = self.file.read(offset, next_offset - offset)?;
-        Ok(Arc::new(Block::decode(&data)))
+        // get all data including checksum
+        let block_len = block_end - offset - 4;
+        let data_including_checksum = self.file.read(offset, block_end - offset)?;
+        let checksum = (&data_including_checksum[block_len as usize..]).get_u32();
+        let block_data = &data_including_checksum[..block_len as usize];
+        // check checksum
+        if checksum != crc32fast::hash(block_data) {
+            return Err(anyhow::anyhow!("checksum mismatch"));
+        }
+
+        Ok(Arc::new(Block::decode(block_data)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)

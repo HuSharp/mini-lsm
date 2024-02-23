@@ -5,12 +5,13 @@ use std::sync::Arc;
 use std::{fs::File, io::Write};
 
 use anyhow::{Context, Result};
+use bytes::{Buf, BufMut};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::compact::CompactionTask;
 
-// | JSON record | JSON record | JSON record | JSON record |
+// | len | JSON record | checksum | len | JSON record | checksum | len | JSON record | checksum |
 pub struct Manifest {
     file: Arc<Mutex<File>>,
 }
@@ -44,8 +45,18 @@ impl Manifest {
             .context("failed to recover manifest")?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
-        let stream = serde_json::Deserializer::from_slice(&buf).into_iter::<ManifestRecord>();
-        let records = stream.collect::<Result<Vec<_>, _>>()?;
+        // need to check all records checksum
+        let mut stream = buf.as_slice();
+        let mut records = Vec::new();
+        while stream.has_remaining() {
+            let len = stream.get_u64() as usize;
+            let record = stream.copy_to_bytes(len);
+            let checksum = stream.get_u32();
+            if crc32fast::hash(&record) != checksum {
+                return Err(anyhow::anyhow!("Manifest record checksum mismatch"));
+            }
+            records.push(serde_json::from_slice(&record)?);
+        }
         Ok((
             Self {
                 file: Arc::new(Mutex::new(file)),
@@ -64,7 +75,11 @@ impl Manifest {
 
     pub fn add_record_when_init(&self, record: ManifestRecord) -> Result<()> {
         let mut file = self.file.lock();
-        let buf = serde_json::to_vec(&record)?;
+        let mut buf = serde_json::to_vec(&record)?;
+        file.write_all(&(buf.len() as u64).to_be_bytes())?;
+        // add checksum
+        let checksum = crc32fast::hash(&buf);
+        buf.put_u32(checksum);
         file.write_all(&buf)?;
         file.sync_all()?;
         Ok(())
