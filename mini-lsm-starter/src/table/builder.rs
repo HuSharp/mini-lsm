@@ -54,7 +54,7 @@ impl SsTableBuilder {
         }
 
         // add the key hash to the bloom filter
-        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
+        self.key_hashes.push(farmhash::fingerprint32(key.key_ref()));
         // block builder returns false when the block is full.
         if self.block_builder.add(key, value) {
             self.last_key.set_from_slice(key);

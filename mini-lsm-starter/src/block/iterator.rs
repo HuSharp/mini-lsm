@@ -90,13 +90,17 @@ impl BlockIterator {
         let key_len = entry.get_u16() as usize;
         let key = &entry[..key_len];
         self.key.clear();
-        self.key.append(&self.first_key.raw_ref()[..redundant_len]);
+        self.key.append(&self.first_key.key_ref()[..redundant_len]);
         self.key.append(key);
         // move the entry ptr to the begin of the value
         entry.advance(key_len);
+        // set timestamp
+        let ts = entry.get_u64();
+        self.key.set_ts(ts);
         let value_len = entry.get_u16() as usize;
         let value_offset_begin = offset
                 + SIZEOF_U16*2 /* redundant + key_len(2B) */
+                + std::mem::size_of::<u64>() /* timestamp(u64) */
                 + key_len
                 + SIZEOF_U16 /* value_len(2B) */;
         let value_offset_end = value_offset_begin + value_len;

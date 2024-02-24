@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 mod builder;
 mod iterator;
 
@@ -52,8 +49,9 @@ impl Block {
         // redundant key is 0
         let mut entry = &self.data[0..];
         entry.get_u16();
-        let key_len = entry.get_u16();
-        let key = &entry[..key_len as usize];
-        KeyVec::from_vec(key.to_vec())
+        let key_len = entry.get_u16() as usize;
+        let key = &entry[..key_len];
+        entry.advance(key_len);
+        KeyVec::from_vec_with_ts(key.to_vec(), entry.get_u64())
     }
 }

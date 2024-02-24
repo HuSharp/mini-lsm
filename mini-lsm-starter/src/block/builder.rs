@@ -25,8 +25,8 @@ pub struct BlockBuilder {
 
 fn compute_redundant_key(first_key: KeySlice, cur_key: KeySlice) -> usize {
     let mut i = 0;
-    while i < first_key.len() && i < cur_key.len() {
-        if first_key.raw_ref()[i] == cur_key.raw_ref()[i] {
+    while i < first_key.key_len() && i < cur_key.key_len() {
+        if first_key.key_ref()[i] == cur_key.key_ref()[i] {
             i += 1;
         } else {
             break;
@@ -46,18 +46,23 @@ impl BlockBuilder {
         }
     }
 
+    fn estimated_size(&self) -> usize {
+        SIZEOF_U16 /* number of key-value pairs in the block */ +  self.offsets.len() * SIZEOF_U16 /* offsets */ + self.data.len()
+        // key-value pairs
+    }
+
     /* Each entry is a key-value pair.
     -----------------------------------------------------------------------
     |                           Entry #1                            | ... |
     -----------------------------------------------------------------------
-    | redundant_key(first_key_index) | key_len (2B) | key (keylen) | value_len (2B) | value (varlen) | ... |
+    | redundant_key(first_key_index) | key_len (2B) | key (keylen) | timestamp (u64) | value_len (2B) | value (varlen) | ... |
     -----------------------------------------------------------------------
     */
     /// Adds a key-value pair to the block. Returns false when the block is full.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        if self.data.len() + self.offsets.len() + SIZEOF_U16 /* num of elements */
-            + key.len() + value.len() + SIZEOF_U16 /* key len */ + SIZEOF_U16 /* value len */
+        if self.estimated_size() + SIZEOF_U16 /* num of elements */
+            + key.raw_len() + value.len() + SIZEOF_U16 /* key len */ + SIZEOF_U16 /* value len */
             > self.block_size
             && !self.is_empty()
         {
@@ -70,9 +75,11 @@ impl BlockBuilder {
         let redundant_index = compute_redundant_key(self.first_key.as_key_slice(), key);
         self.data.put_u16(redundant_index as u16);
         // rest of the key
-        self.data.put_u16((key.len() - redundant_index) as u16);
-        self.data.put(&key.raw_ref()[redundant_index..]);
-
+        self.data.put_u16((key.key_len() - redundant_index) as u16);
+        self.data.put(&key.key_ref()[redundant_index..]);
+        // timestamp
+        self.data.put_u64(key.ts());
+        // value
         self.data.put_u16(value.len() as u16);
         self.data.put(value);
 
