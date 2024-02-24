@@ -23,6 +23,7 @@ pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
     is_valid: bool,
+    prev_key: Vec<u8>,
 }
 
 impl LsmIterator {
@@ -31,16 +32,26 @@ impl LsmIterator {
             is_valid: iter.is_valid(),
             inner: iter,
             end_bound,
+            prev_key: Vec::new(),
         };
-        iter.move_to_non_delete()?;
+        iter.move_to_key()?;
         Ok(iter)
     }
 
-    fn move_to_non_delete(&mut self) -> Result<()> {
-        while self.is_valid() && self.inner.value().is_empty() {
-            self.next_inner()?;
+    fn move_to_key(&mut self) -> Result<()> {
+        loop {
+            while self.is_valid() && self.key() == self.prev_key {
+                self.next_inner()?;
+            }
+            if !self.is_valid() {
+                return Ok(());
+            }
+            self.prev_key.clear();
+            self.prev_key.extend(self.inner.key().key_ref());
+            if !self.value().is_empty() {
+                return Ok(());
+            }
         }
-        Ok(())
     }
 
     fn next_inner(&mut self) -> Result<()> {
@@ -75,8 +86,8 @@ impl StorageIterator for LsmIterator {
 
     fn next(&mut self) -> Result<()> {
         self.next_inner()?;
-        // move to the next non-delete entry
-        self.move_to_non_delete()?;
+        // move to the next key
+        self.move_to_key()?;
         Ok(())
     }
 

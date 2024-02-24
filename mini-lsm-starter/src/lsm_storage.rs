@@ -20,10 +20,10 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
-use crate::key::{KeySlice, TS_RANGE_BEGIN};
+use crate::key::{KeySlice, TS_RANGE_BEGIN, TS_RANGE_END};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
-use crate::mem_table::{map_bound, MemTable};
+use crate::mem_table::{map_bound, map_key_bound_plus_ts, MemTable};
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
@@ -261,6 +261,10 @@ impl LsmStorageInner {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
+    pub(crate) fn mvcc(&self) -> &LsmMvccInner {
+        self.mvcc.as_ref().unwrap()
+    }
+
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
     /// not exist.
     pub(crate) fn open(path: impl AsRef<Path>, options: LsmStorageOptions) -> Result<Self> {
@@ -383,7 +387,7 @@ impl LsmStorageInner {
             compaction_controller,
             manifest: Some(manifest),
             options: options.into(),
-            mvcc: None,
+            mvcc: Some(LsmMvccInner::new(0)),
         };
 
         storage.sync_dir()?;
@@ -529,22 +533,21 @@ impl LsmStorageInner {
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let snapshot = self.state.read();
         // search memtable firstly
-        if let Some(value) = snapshot.memtable.get(key) {
-            if value.is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(value));
-        }
+        let mut memtable_iters = Vec::with_capacity(snapshot.imm_memtables.len() + 1);
+        memtable_iters.push(Box::new(snapshot.memtable.scan(
+            Bound::Included(KeySlice::from_slice(key, TS_RANGE_BEGIN)),
+            Bound::Included(KeySlice::from_slice(key, TS_RANGE_END)),
+        ))); // memtable scan range is [key, key]
 
         // traverse imm-memtable
-        for memtable in snapshot.imm_memtables.iter() {
-            if let Some(value) = memtable.get(key) {
-                if value.is_empty() {
-                    return Ok(None);
-                }
-                return Ok(Some(value));
-            }
+        for imm_memtable in snapshot.imm_memtables.iter() {
+            memtable_iters.push(Box::new(imm_memtable.scan(
+                Bound::Included(KeySlice::from_slice(key, TS_RANGE_BEGIN)),
+                Bound::Included(KeySlice::from_slice(key, TS_RANGE_END)),
+            )));
         }
+        // using merge iterator to merge all memtables and imm_memtables iters
+        let memtable_iter = MergeIterator::create(memtable_iters);
 
         let check_sst = |key: &[u8], sst: &SsTable| {
             // check if the key is within the SST's key range
@@ -573,7 +576,8 @@ impl LsmStorageInner {
                 l0_iters.push(Box::new(iter));
             }
         }
-        let merge_l0_sstable_iter = MergeIterator::create(l0_iters);
+        let memtable_and_l0_iter =
+            TwoMergeIterator::create(memtable_iter, MergeIterator::create(l0_iters))?;
 
         // create merge iterator for multi-level sstables
         let mut level_iters = Vec::with_capacity(snapshot.levels.len());
@@ -591,9 +595,9 @@ impl LsmStorageInner {
             )?;
             level_iters.push(Box::new(level_iter));
         }
-        let merge_iter = MergeIterator::create(level_iters);
+        let merge_level_iter = MergeIterator::create(level_iters);
 
-        let two_merge_iterator = TwoMergeIterator::create(merge_l0_sstable_iter, merge_iter)?;
+        let two_merge_iterator = TwoMergeIterator::create(memtable_and_l0_iter, merge_level_iter)?;
         if two_merge_iterator.is_valid()
             && two_merge_iterator.key().key_ref() == key
             && !two_merge_iterator.value().is_empty()
@@ -617,12 +621,19 @@ impl LsmStorageInner {
 
         // need to get all memtables and imm_memtables
         let mut memtable_iters = Vec::with_capacity(snapshot.imm_memtables.len() + 1);
-        memtable_iters.push(Box::new(snapshot.memtable.scan(lower, upper)));
+        memtable_iters.push(Box::new(snapshot.memtable.scan(
+            map_key_bound_plus_ts(lower, TS_RANGE_BEGIN),
+            map_key_bound_plus_ts(upper, TS_RANGE_END),
+        )));
+
         for imm_memtable in snapshot.imm_memtables.iter() {
-            memtable_iters.push(Box::new(imm_memtable.scan(lower, upper)));
+            memtable_iters.push(Box::new(imm_memtable.scan(
+                map_key_bound_plus_ts(lower, TS_RANGE_BEGIN),
+                map_key_bound_plus_ts(upper, TS_RANGE_END),
+            )));
         }
         // using merge iterator to merge all memtables and imm_memtables iters
-        let merge_memtable_iter = MergeIterator::create(memtable_iters);
+        let memtable_iter = MergeIterator::create(memtable_iters);
 
         // using merge iterator to merge all sstables iters
         let mut l0_iters = Vec::with_capacity(snapshot.l0_sstables.len());
@@ -648,7 +659,7 @@ impl LsmStorageInner {
                             sst,
                             KeySlice::from_slice(key, TS_RANGE_BEGIN),
                         )?;
-                        if iter.is_valid() && iter.key().key_ref() == key {
+                        while iter.is_valid() && iter.key().key_ref() == key {
                             iter.next()?;
                         }
                         iter
@@ -659,10 +670,9 @@ impl LsmStorageInner {
                 l0_iters.push(Box::new(iter));
             }
         }
-        let merge_l0_sstable_iter = MergeIterator::create(l0_iters);
         // memtables and imm_memtables are merged first, then the result is merged with L0 SSTs
-        let two_merge_sst_iter =
-            TwoMergeIterator::create(merge_memtable_iter, merge_l0_sstable_iter)?;
+        let memtable_and_l0_iter =
+            TwoMergeIterator::create(memtable_iter, MergeIterator::create(l0_iters))?;
 
         // concat multi-level sstables
         let mut sst_concat_iters = Vec::with_capacity(snapshot.levels.len());
@@ -682,7 +692,7 @@ impl LsmStorageInner {
                         ssts,
                         KeySlice::from_slice(key, TS_RANGE_BEGIN),
                     )?;
-                    if iter.is_valid() && iter.key().key_ref() == key {
+                    while iter.is_valid() && iter.key().key_ref() == key {
                         iter.next()?;
                     }
                     iter
@@ -694,7 +704,7 @@ impl LsmStorageInner {
         let merge_sst_iter = MergeIterator::create(sst_concat_iters);
 
         // finally, the result is merged with L1 SSTs
-        let two_merge_iter = TwoMergeIterator::create(two_merge_sst_iter, merge_sst_iter)?;
+        let two_merge_iter = TwoMergeIterator::create(memtable_and_l0_iter, merge_sst_iter)?;
 
         Ok(FusedIterator::new(LsmIterator::new(
             two_merge_iter,
@@ -704,6 +714,8 @@ impl LsmStorageInner {
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
     pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
+        let _lck = self.mvcc().write_lock.lock();
+        let ts = self.mvcc().latest_commit_ts() + 1;
         for record in batch {
             match record {
                 WriteBatchRecord::Put(key, value) => {
@@ -713,8 +725,10 @@ impl LsmStorageInner {
                         let value = value.as_ref();
                         assert!(!key.is_empty(), "key cannot be empty");
                         assert!(!value.is_empty(), "value cannot be empty");
-                        let snapshot = self.state.write();
-                        snapshot.memtable.put(key, value)?;
+                        let snapshot = self.state.read();
+                        snapshot
+                            .memtable
+                            .put(KeySlice::from_slice(key, ts), value)?;
                         size = snapshot.memtable.approximate_size();
                     }
 
@@ -724,8 +738,8 @@ impl LsmStorageInner {
                     let size;
                     {
                         let key = key.as_ref();
-                        let snapshot = self.state.write();
-                        snapshot.memtable.put(key, b"")?;
+                        let snapshot = self.state.read();
+                        snapshot.memtable.put(KeySlice::from_slice(key, ts), &[])?;
                         size = snapshot.memtable.approximate_size();
                     }
 
@@ -733,6 +747,7 @@ impl LsmStorageInner {
                 }
             }
         }
+        self.mvcc().update_commit_ts(ts);
         Ok(())
     }
 
