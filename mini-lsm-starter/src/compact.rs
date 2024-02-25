@@ -118,22 +118,48 @@ impl LsmStorageInner {
     fn compact_generate_sst_from_iter(
         &self,
         mut iter: impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
-        _compact_to_bottom_level: bool,
+        compact_to_bottom_level: bool,
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut new_ssts = Vec::new();
         // compact the iterators
         let mut builder = None;
         let mut last_key = Vec::<u8>::new();
+        // All ts (strictly) below this ts can be garbage collected.
+        let gc_ts = self.mvcc().watermark();
+        let mut last_gc_key = Vec::<u8>::new();
         while iter.is_valid() {
             if builder.is_none() {
                 builder = Some(SsTableBuilder::new(self.options.block_size));
             }
             let builder_inner = builder.as_mut().unwrap();
 
-            let same_as_last_key = iter.key().key_ref() == last_key;
+            // 1. for all versions of a key below or equal to the watermark, keep the latest version.
+            if iter.key().ts() <= gc_ts {
+                let same_as_last_gc_key = iter.key().key_ref() == last_gc_key;
+                if !same_as_last_gc_key {
+                    last_gc_key.clear();
+                    last_gc_key.extend(iter.key().key_ref());
+                }
 
-            // keep ALL versions of a key during the compaction.(NOT remove empty keys for now[week 3, day 2])
-            //  the same key with different timestamps are put in the same SST file, even if it exceeds the SST size limit
+                if same_as_last_gc_key {
+                    iter.next()?;
+                    continue;
+                }
+            }
+
+            let same_as_last_key = iter.key().key_ref() == last_key;
+            // 2. gc the version of a key is empty and below the watermark
+            if compact_to_bottom_level && iter.key().ts() <= gc_ts && iter.value().is_empty() {
+                // if this key is not same as the last key, need to update last_key
+                if !same_as_last_key {
+                    last_key.clear();
+                    last_key.extend(iter.key().key_ref());
+                }
+                iter.next()?;
+                continue;
+            }
+
+            // the same key with different timestamps are put in the same SST file, even if it exceeds the SST size limit
             if builder_inner.estimated_size() >= self.options.target_sst_size && !same_as_last_key {
                 let sst_id = self.next_sst_id();
                 let old_builder = builder.take().unwrap();
