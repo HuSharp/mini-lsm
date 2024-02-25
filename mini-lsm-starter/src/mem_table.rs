@@ -22,7 +22,7 @@ use crate::wal::Wal;
 /// chapters of week 1 and week 2.
 #[derive(Debug)]
 pub struct MemTable {
-    map: Arc<SkipMap<KeyBytes, Bytes>>,
+    pub(crate) map: Arc<SkipMap<KeyBytes, Bytes>>,
     wal: Option<Wal>,
     id: usize,
     approximate_size: Arc<AtomicUsize>,

@@ -55,6 +55,12 @@ impl LsmMvccInner {
     }
 
     pub fn new_txn(&self, inner: Arc<LsmStorageInner>, serializable: bool) -> Arc<Transaction> {
-        unimplemented!()
+        Arc::new(Transaction {
+            read_ts: self.ts.lock().0,
+            inner,
+            local_storage: Arc::new(Default::default()),
+            committed: Arc::new(Default::default()),
+            key_hashes: None,
+        })
     }
 }

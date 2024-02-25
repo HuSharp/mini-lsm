@@ -41,7 +41,7 @@ impl BlockMeta {
     /// Encode block meta to a buffer.
     /// You may add extra fields to the buffer,
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
-    pub fn encode_block_metas(block_meta: &[BlockMeta], buf: &mut Vec<u8>) {
+    pub fn encode_block_metas(block_meta: &[BlockMeta], buf: &mut Vec<u8>, max_ts: u64) {
         let original_len = buf.len();
         let meta_len = block_meta.len();
         buf.put_u32(block_meta.len() as u32);
@@ -54,13 +54,15 @@ impl BlockMeta {
             buf.put_slice(meta.last_key.key_ref());
             buf.put_u64(meta.last_key.ts());
         }
+        // put max ts
+        buf.put_u64(max_ts);
         // add checksum
         let checksum = crc32fast::hash(&buf[original_len + 4..]);
         buf.put_u32(checksum);
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_metas(mut buf: &[u8]) -> Result<Vec<BlockMeta>> {
+    pub fn decode_block_metas(mut buf: &[u8]) -> Result<(Vec<BlockMeta>, u64)> {
         // get meta data len
         let meta_len = buf.get_u32() as usize;
         // cal checksum
@@ -80,11 +82,13 @@ impl BlockMeta {
                 last_key,
             });
         }
+        let max_ts = buf.get_u64();
         // checksum
         if checksum != buf.get_u32() {
             return Err(anyhow::anyhow!("BlockMeta checksum mismatch"));
         }
-        Ok(block_meta)
+
+        Ok((block_meta, max_ts))
     }
 }
 
@@ -162,7 +166,7 @@ impl SsTable {
         let raw_block_meta_offset = file.read(bloom_offset - 4, 4)?;
         let block_meta_offset = (&raw_block_meta_offset[..]).get_u32() as u64;
         let raw_block_meta = file.read(block_meta_offset, bloom_offset - 4 - block_meta_offset)?;
-        let block_metas = BlockMeta::decode_block_metas(raw_block_meta.as_slice())?;
+        let (block_metas, max_ts) = BlockMeta::decode_block_metas(raw_block_meta.as_slice())?;
 
         // decode data blocks
         let raw_data = file.read(0, block_meta_offset)?;
@@ -176,7 +180,7 @@ impl SsTable {
             block_metas,
             block_cache,
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts,
         };
         Ok(sst_table)
     }

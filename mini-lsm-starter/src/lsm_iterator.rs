@@ -23,15 +23,21 @@ pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
     is_valid: bool,
+    read_ts: u64,
     prev_key: Vec<u8>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+    pub(crate) fn new(
+        iter: LsmIteratorInner,
+        end_bound: Bound<Bytes>,
+        read_ts: u64,
+    ) -> Result<Self> {
         let mut iter = Self {
             is_valid: iter.is_valid(),
             inner: iter,
             end_bound,
+            read_ts,
             prev_key: Vec::new(),
         };
         iter.move_to_key()?;
@@ -48,6 +54,21 @@ impl LsmIterator {
             }
             self.prev_key.clear();
             self.prev_key.extend(self.inner.key().key_ref());
+            // traverse all version of the same key
+            while self.is_valid()
+                && self.key() == self.prev_key
+                && self.inner.key().ts() > self.read_ts
+            {
+                self.next_inner()?;
+            }
+            if !self.is_valid() {
+                return Ok(());
+            }
+            // if now the key is different(all ts above `read_ts``),
+            // need to move to the next key.
+            if self.key() != self.prev_key {
+                continue;
+            }
             if !self.value().is_empty() {
                 return Ok(());
             }
