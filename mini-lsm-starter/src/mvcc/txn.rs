@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::{
     collections::HashSet,
     ops::Bound,
@@ -23,6 +20,7 @@ use crate::{
     mem_table::map_bound,
 };
 
+use super::CommittedTxnData;
 
 pub struct Transaction {
     pub(crate) read_ts: u64,
@@ -38,6 +36,13 @@ impl Transaction {
         if self.committed.load(Ordering::SeqCst) {
             panic!("cannot operate on committed txn!");
         }
+
+        if let Some(guard) = &self.key_hashes {
+            let mut guard = guard.lock();
+            let (_, read_set) = &mut *guard;
+            read_set.insert(farmhash::hash32(key));
+        }
+
         if let Some(entry) = self.local_storage.get(key) {
             if entry.value().is_empty() {
                 return Ok(None);
@@ -75,14 +80,23 @@ impl Transaction {
         if self.committed.load(Ordering::SeqCst) {
             panic!("cannot operate on committed txn!");
         }
+        if let Some(key_hashes) = &self.key_hashes {
+            let mut key_hashes = key_hashes.lock();
+            let (write_hashes, _) = &mut *key_hashes;
+            write_hashes.insert(farmhash::hash32(key));
+        }
         self.local_storage
-        
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
 
     pub fn delete(&self, key: &[u8]) {
         if self.committed.load(Ordering::SeqCst) {
             panic!("cannot operate on committed txn!");
+        }
+        if let Some(key_hashes) = &self.key_hashes {
+            let mut key_hashes = key_hashes.lock();
+            let (write_hashes, _) = &mut *key_hashes;
+            write_hashes.insert(farmhash::hash32(key));
         }
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::new());
@@ -92,14 +106,71 @@ impl Transaction {
         self.committed
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .expect("cannot operate on committed txn!");
-        let batch = self.local_storage.iter().map(|entry| {
-            if entry.value().is_empty() {
-                WriteBatchRecord::Del(entry.key().clone())
-            } else {
-                WriteBatchRecord::Put(entry.key().clone(), entry.value().clone())
+        // ensures only one transaction goes into the transaction verification and commit phase.
+        let _commit_lock = self.inner.mvcc().commit_lock.lock();
+        if let Some(guard) = &self.key_hashes {
+            let guard = guard.lock();
+            let (write_set, read_set) = &*guard;
+            println!(
+                "commit txn: write_set: {:?}, read_set: {:?}",
+                write_set, read_set
+            );
+            if !write_set.is_empty() {
+                let committed_txns = self.inner.mvcc().committed_txns.lock();
+                // go through all transactions with commit timestamp within range (read_ts, expected_commit_ts) (both excluded bounds)
+                for (_, txn_data) in committed_txns.range(self.read_ts + 1..) {
+                    for key_hash in read_set {
+                        // if the read set of the current transaction overlaps with the write set of any transaction.
+                        if txn_data.key_hashes.contains(key_hash) {
+                            println!(
+                                "txn conflict detected: {:?} {:?}",
+                                write_set, txn_data.key_hashes
+                            );
+                            return Err(anyhow::anyhow!("txn conflict detected"));
+                        }
+                    }
+                }
             }
-        }).collect::<Vec<_>>();
-        self.inner.write_batch(&batch)?;
+        }
+
+        let batch = self
+            .local_storage
+            .iter()
+            .map(|entry| {
+                if entry.value().is_empty() {
+                    WriteBatchRecord::Del(entry.key().clone())
+                } else {
+                    WriteBatchRecord::Put(entry.key().clone(), entry.value().clone())
+                }
+            })
+            .collect::<Vec<_>>();
+        let commit_ts = self.inner.write_batch_inner(&batch)?;
+
+        // insert the write set into the committed_txns
+        if let Some(_) = &self.key_hashes {
+            let mut committed_txns = self.inner.mvcc().committed_txns.lock();
+            let mut key_hashes = self.key_hashes.as_ref().unwrap().lock();
+            let (write_set, _) = &mut *key_hashes;
+            committed_txns.insert(
+                commit_ts,
+                CommittedTxnData {
+                    key_hashes: std::mem::take(write_set),
+                    read_ts: self.read_ts,
+                    commit_ts,
+                },
+            );
+
+            // remove all transactions below the watermark
+            let watermark = self.inner.mvcc().watermark();
+            while let Some(entry) = committed_txns.first_entry() {
+                if *entry.key() < watermark {
+                    entry.remove();
+                } else {
+                    break;
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -168,16 +239,27 @@ impl TxnIterator {
     ) -> Result<Self> {
         let mut iter = Self { txn, iter };
         iter.skip_deletes()?;
+        if iter.is_valid() {
+            iter.add_to_read_set(iter.key());
+        }
         Ok(iter)
     }
 
-    // TwoMergeIterator will retain the deletion markers in the child iterators, 
+    // TwoMergeIterator will retain the deletion markers in the child iterators,
     // we need to modify your TxnIterator implementation to correctly handle deletions.
     fn skip_deletes(&mut self) -> Result<()> {
         while self.iter.is_valid() && self.iter.value().is_empty() {
             self.iter.next()?;
         }
         Ok(())
+    }
+
+    fn add_to_read_set(&self, key: &[u8]) {
+        if let Some(guard) = &self.txn.key_hashes {
+            let mut guard = guard.lock();
+            let (_, read_set) = &mut *guard;
+            read_set.insert(farmhash::hash32(key));
+        }
     }
 }
 

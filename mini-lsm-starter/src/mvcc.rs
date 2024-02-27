@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 pub mod txn;
 pub mod watermark;
 
@@ -63,7 +60,11 @@ impl LsmMvccInner {
             inner,
             local_storage: Arc::new(Default::default()),
             committed: Arc::new(Default::default()),
-            key_hashes: None,
+            key_hashes: if serializable {
+                Some(Mutex::new((HashSet::new(), HashSet::new())))
+            } else {
+                None
+            },
         })
     }
 }

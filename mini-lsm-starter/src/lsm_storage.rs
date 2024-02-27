@@ -667,8 +667,8 @@ impl LsmStorageInner {
             if check_intersect_of_range(
                 lower,
                 upper,
-                sst.first_key().key_ref(),
-                sst.last_key().key_ref(),
+                sst.first_key().as_key_slice(),
+                sst.last_key().as_key_slice(),
             ) {
                 // SST iterator does not support passing an end bound to it.
                 // Therefore, need to handle the end_bound manually in LsmIterator
@@ -703,7 +703,15 @@ impl LsmStorageInner {
             println!("level: {}", level);
             let mut ssts = Vec::with_capacity(level_sst_ids.len());
             for sst_id in level_sst_ids.iter() {
-                ssts.push(snapshot.sstables[sst_id].clone());
+                let sst = snapshot.sstables[sst_id].clone();
+                if check_intersect_of_range(
+                    lower,
+                    upper,
+                    sst.first_key().as_key_slice(),
+                    sst.last_key().as_key_slice(),
+                ) {
+                    ssts.push(sst);
+                }
             }
             let concat_iter = match lower {
                 Bound::Included(key) => SstConcatIterator::create_and_seek_to_key(
@@ -737,7 +745,30 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
+    pub fn write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        if self.options.serializable {
+            let txn = self.mvcc().new_txn(self.clone(), true);
+            for record in batch {
+                match record {
+                    WriteBatchRecord::Put(key, value) => {
+                        txn.put(key.as_ref(), value.as_ref());
+                    }
+                    WriteBatchRecord::Del(key) => {
+                        txn.delete(key.as_ref());
+                    }
+                }
+            }
+            txn.commit()?;
+        } else {
+            self.write_batch_inner(batch)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_batch_inner<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<u64> {
         let _lck = self.mvcc().write_lock.lock();
         let ts = self.mvcc().latest_commit_ts() + 1;
         for record in batch {
@@ -772,17 +803,31 @@ impl LsmStorageInner {
             }
         }
         self.mvcc().update_commit_ts(ts);
-        Ok(())
+        Ok(ts)
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        self.write_batch(&[WriteBatchRecord::Put(key, value)])
+    pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
+        if self.options.serializable {
+            let txn = self.mvcc().new_txn(self.clone(), true);
+            txn.put(key, value);
+            txn.commit()?;
+        } else {
+            self.write_batch_inner(&[WriteBatchRecord::Put(key, value)])?;
+        }
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, key: &[u8]) -> Result<()> {
-        self.write_batch(&[WriteBatchRecord::Del(key)])
+    pub fn delete(self: &Arc<Self>, key: &[u8]) -> Result<()> {
+        if self.options.serializable {
+            let txn = self.mvcc().new_txn(self.clone(), true);
+            txn.delete(key);
+            txn.commit()?;
+        } else {
+            self.write_batch_inner(&[WriteBatchRecord::Del(key)])?;
+        }
+        Ok(())
     }
 }
 
@@ -797,27 +842,27 @@ fn key_within(key: &[u8], sst_begin: &[u8], sst_end: &[u8]) -> bool {
 fn check_intersect_of_range(
     begin: Bound<&[u8]>,
     end: Bound<&[u8]>,
-    sst_begin: &[u8],
-    sst_end: &[u8],
+    sst_begin: KeySlice,
+    sst_end: KeySlice,
 ) -> bool {
     println!(
         "intersected: {:?} {:?}, sst: {:?} {:?}",
         begin, end, sst_begin, sst_end
     );
     match end {
-        Bound::Excluded(key) if key <= sst_begin => {
+        Bound::Excluded(key) if key <= sst_begin.key_ref() => {
             return false;
         }
-        Bound::Included(key) if key < sst_begin => {
+        Bound::Included(key) if key < sst_begin.key_ref() => {
             return false;
         }
         _ => {}
     }
     match begin {
-        Bound::Excluded(key) if sst_end <= key => {
+        Bound::Excluded(key) if sst_end.key_ref() <= key => {
             return false;
         }
-        Bound::Included(key) if sst_end < key => {
+        Bound::Included(key) if sst_end.key_ref() < key => {
             return false;
         }
         _ => {}
