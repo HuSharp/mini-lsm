@@ -295,6 +295,11 @@ pub fn check_compaction_ratio(storage: Arc<MiniLsm>) {
         };
         level_size.push(size);
     }
+    let extra_iterators = if TS_ENABLED {
+        1 /* txn local iterator for OCC */
+    } else {
+        0
+    };
     let num_iters = storage
         .scan(Bound::Unbounded, Bound::Unbounded)
         .unwrap()
@@ -326,8 +331,8 @@ pub fn check_compaction_ratio(storage: Arc<MiniLsm>) {
                 );
             }
             assert!(
-                num_iters <= l0_sst_num + num_memtables + max_levels,
-                "did you use concat iterators?"
+                num_iters <= l0_sst_num + num_memtables + max_levels + extra_iterators,
+                "we found {num_iters} iterators in your implementation, (l0_sst_num={l0_sst_num}, num_memtables={num_memtables}, max_levels={max_levels}) did you use concat iterators?"
             );
         }
         CompactionOptions::Leveled(LeveledCompactionOptions {
@@ -338,23 +343,24 @@ pub fn check_compaction_ratio(storage: Arc<MiniLsm>) {
         }) => {
             assert!(l0_sst_num < level0_file_num_compaction_trigger);
             assert!(level_size.len() <= max_levels);
-            for idx in 1..level_size.len() {
-                let prev_size = level_size[idx - 1];
-                let this_size = level_size[idx];
+            let last_level_size = *level_size.last().unwrap();
+            let mut multiplier = 1.0;
+            for idx in (1..level_size.len()).rev() {
+                multiplier *= level_size_multiplier as f64;
+                let this_size = level_size[idx - 1];
                 assert!(
                     // do not add hard requirement on level size multiplier considering bloom filters...
-                    this_size as f64 / prev_size as f64 >= (level_size_multiplier as f64 - 0.5),
-                    "L{}/L{}, {}/{}<<{}",
-                    state.levels[idx].0,
+                    this_size as f64 / last_level_size as f64 <= 1.0 / multiplier + 0.5,
+                    "L{}/L_max, {}/{}>>1.0/{}",
                     state.levels[idx - 1].0,
                     this_size,
-                    prev_size,
-                    level_size_multiplier
+                    last_level_size,
+                    multiplier
                 );
             }
             assert!(
-                num_iters <= l0_sst_num + num_memtables + max_levels,
-                "did you use concat iterators?"
+                num_iters <= l0_sst_num + num_memtables + max_levels + extra_iterators,
+                "we found {num_iters} iterators in your implementation, (l0_sst_num={l0_sst_num}, num_memtables={num_memtables}, max_levels={max_levels}) did you use concat iterators?"
             );
         }
         CompactionOptions::Tiered(TieredCompactionOptions {
@@ -395,8 +401,8 @@ pub fn check_compaction_ratio(storage: Arc<MiniLsm>) {
                 sum_size += this_size;
             }
             assert!(
-                num_iters <= num_memtables + num_tiers,
-                "did you use concat iterators?"
+                num_iters <= num_memtables + num_tiers + extra_iterators,
+                "we found {num_iters} iterators in your implementation, (num_memtables={num_memtables}, num_tiers={num_tiers}) did you use concat iterators?"
             );
         }
     }

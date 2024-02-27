@@ -118,6 +118,7 @@ impl LeveledCompactionController {
             }
         }
         priorities.sort_by(|a, b| a.partial_cmp(b).unwrap().reverse());
+
         let priority = priorities.first();
         if let Some((_, level)) = priority {
             println!(

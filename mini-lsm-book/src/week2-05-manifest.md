@@ -7,6 +7,13 @@ In this chapter, you will:
 * Implement encoding and decoding of the manifest file.
 * Recover from the manifest when the system restarts.
 
+To copy the test cases into the starter code and run them,
+
+```
+cargo x copy-test --week 2 --day 5
+cargo x scheck
+```
+
 ## Task 1: Manifest Encoding
 
 The system uses a manifest file to record all operations happened in the engine. Currently, there are only two types of them: compaction and SST flush. When the engine restarts, it will read the manifest file, reconstruct the state, and load the SST files on the disk.
@@ -87,5 +94,6 @@ get 1500
 ## Bonus Tasks
 
 * **Manifest Compaction.** When the number of logs in the manifest file gets too large, you can rewrite the manifest file to only store the current snapshot and append new logs to that file.
+* **Parallel Open.** After you collect the list of SSTs to open, you can open and decode them in parallel, instead of doing it one by one, therefore accelerating the recovery process.
 
 {{#include copyright.md}}
