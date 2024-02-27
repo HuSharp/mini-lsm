@@ -150,11 +150,11 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
     }
 
     fn next(&mut self) -> Result<()> {
-        if self.has_error {
+        if self.has_errored {
             bail!("Iterator has already returned an error")
         }
         if let Some(err) = self.iter.next().err() {
-            self.has_error = true;
+            self.has_errored = true;
             return Err(err);
         }
         Ok(())

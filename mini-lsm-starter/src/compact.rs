@@ -22,7 +22,7 @@ use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
 use crate::key::KeySlice;
 use crate::lsm_iterator::FusedIterator;
-use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::lsm_storage::{CompactionFilter, LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
@@ -127,7 +127,9 @@ impl LsmStorageInner {
         // All ts (strictly) below this ts can be garbage collected.
         let gc_ts = self.mvcc().watermark();
         let mut last_gc_key = Vec::<u8>::new();
-        while iter.is_valid() {
+        // add compaction filters, ref https://skyzh.github.io/mini-lsm/week3-07-compaction-filter.html
+        let compaction_filters = self.compaction_filters.lock().clone();
+        'outer: while iter.is_valid() {
             if builder.is_none() {
                 builder = Some(SsTableBuilder::new(self.options.block_size));
             }
@@ -144,6 +146,19 @@ impl LsmStorageInner {
                 if same_as_last_gc_key {
                     iter.next()?;
                     continue;
+                }
+
+                if !compaction_filters.is_empty() {
+                    for filter in &compaction_filters {
+                        match filter {
+                            CompactionFilter::Prefix(prefix) => {
+                                if iter.key().key_ref().starts_with(prefix) {
+                                    iter.next()?;
+                                    continue 'outer;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
